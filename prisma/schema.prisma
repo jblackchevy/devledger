@@ -1,0 +1,710 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Project ────────────────────────────────────────────────────────────────
+
+model Project {
+  id                  String    @id @default(cuid())
+  name                String
+  type                ProjectType
+  address             String?
+  startDate           DateTime?
+  projectedCompletion DateTime?
+  stabilizationTarget DateTime?
+  lihtcFlag           Boolean   @default(false)
+  htcFlag             Boolean   @default(false)
+  itcFlag             Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  fundingSources      FundingSource[]
+  budgetLines         BudgetLine[]
+  contracts           Contract[]
+  invoices            Invoice[]
+  drawPeriods         DrawPeriod[]
+  cashFlowProjections CashFlowProjection[]
+  budgetTransfers     BudgetTransfer[]
+  costCertification   CostCertification?
+  projectRoles        ProjectRole[]
+  auditEvents         AuditEvent[]
+}
+
+enum ProjectType {
+  LIHTC
+  HTC
+  ITC
+  LIHTC_HTC
+  LIHTC_ITC
+  MARKET_RATE
+  MIXED
+}
+
+// ─── Funding Source ──────────────────────────────────────────────────────────
+
+model FundingSource {
+  id                String            @id @default(cuid())
+  projectId         String
+  name              String
+  type              FundingSourceType
+  totalCommitted    Decimal           @db.Decimal(15, 2)
+  drawnToDate       Decimal           @db.Decimal(15, 2) @default(0)
+  availabilityDate  DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  project               Project                        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  budgetAllocations     BudgetLineSourceAllocation[]
+  drawPeriods           DrawPeriod[]
+  cashFlowProjections   CashFlowProjection[]
+  invoiceLineSources    InvoiceLineItemFundingSource[]
+}
+
+enum FundingSourceType {
+  CONSTRUCTION_LOAN
+  LIHTC_EQUITY
+  HTC_EQUITY
+  ITC_EQUITY
+  SOFT_DEBT
+  HOME
+  CDBG
+  TIF
+  OWNER_EQUITY
+  OTHER
+}
+
+// ─── Budget ──────────────────────────────────────────────────────────────────
+
+model BudgetLine {
+  id             String   @id @default(cuid())
+  projectId      String
+  lineNumber     String
+  category       String
+  subcategory    String?
+  description    String
+  originalBudget Decimal  @db.Decimal(15, 2)
+  approvedBudget Decimal  @db.Decimal(15, 2)
+  // Exposure and pending are PM-editable estimates; committed/invoiced are calculated
+  exposure       Decimal  @db.Decimal(15, 2) @default(0)
+  basisEligible  Boolean  @default(false)
+  htcQRE         Boolean  @default(false)
+  itcQEP         Boolean  @default(false)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project          Project                      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceAllocations BudgetLineSourceAllocation[]
+  invoiceLineItems InvoiceLineItem[]
+  contractLines    ContractBudgetLine[]
+  transfersFrom    BudgetTransfer[]             @relation("TransferFrom")
+  transfersTo      BudgetTransfer[]             @relation("TransferTo")
+}
+
+model BudgetLineSourceAllocation {
+  id              String        @id @default(cuid())
+  budgetLineId    String
+  fundingSourceId String
+  percentage      Decimal       @db.Decimal(5, 2)
+
+  budgetLine    BudgetLine    @relation(fields: [budgetLineId], references: [id], onDelete: Cascade)
+  fundingSource FundingSource @relation(fields: [fundingSourceId], references: [id], onDelete: Cascade)
+
+  @@unique([budgetLineId, fundingSourceId])
+}
+
+model BudgetTransfer {
+  id               String         @id @default(cuid())
+  projectId        String
+  fromBudgetLineId String
+  toBudgetLineId   String
+  amount           Decimal        @db.Decimal(15, 2)
+  reason           String
+  status           TransferStatus @default(PENDING)
+  proposedById     String
+  approvedById     String?
+  approvedAt       DateTime?
+  createdAt        DateTime       @default(now())
+
+  project        Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fromBudgetLine BudgetLine @relation("TransferFrom", fields: [fromBudgetLineId], references: [id])
+  toBudgetLine   BudgetLine @relation("TransferTo", fields: [toBudgetLineId], references: [id])
+  proposedBy     User       @relation("TransferProposedBy", fields: [proposedById], references: [id])
+  approvedBy     User?      @relation("TransferApprovedBy", fields: [approvedById], references: [id])
+}
+
+enum TransferStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// ─── Vendor ──────────────────────────────────────────────────────────────────
+
+model Vendor {
+  id                   String               @id @default(cuid())
+  name                 String
+  legalName            String?
+  dba                  String?
+  contactName          String?
+  contactEmail         String?
+  contactPhone         String?
+  address              String?
+  taxIdEncrypted       String?              // AES-256 encrypted EIN/SSN
+  w9OnFile             Boolean              @default(false)
+  w9ReceivedDate       DateTime?
+  vendorType           VendorType
+  csiDivision          String?
+  mwbeClassifications  MWBEClassification[]
+  mwbeCertNumber       String?
+  mwbeCertExpiry       DateTime?
+  is1099Required       Boolean              @default(false)
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  contracts           Contract[]
+  invoices            Invoice[]
+  lienWaivers         LienWaiver[]
+  complianceDocuments ComplianceDocument[]
+}
+
+enum VendorType {
+  GC
+  SUBCONTRACTOR
+  ARCHITECT
+  ENGINEER
+  CIVIL_ENGINEER
+  MEP_ENGINEER
+  CONSULTANT
+  INSPECTOR
+  ENVIRONMENTAL
+  LEGAL
+  TITLE_ESCROW
+  ACCOUNTING
+  OTHER
+}
+
+enum MWBEClassification {
+  MAJORITY_OWNED
+  MBE
+  WBE
+  SBE
+  VOSB
+  SDVOSB
+  HUBZONE
+}
+
+model ComplianceDocument {
+  id           String                 @id @default(cuid())
+  vendorId     String
+  projectId    String?
+  type         ComplianceDocumentType
+  fileKey      String?
+  receivedDate DateTime?
+  expiryDate   DateTime?
+  notes        String?
+  createdAt    DateTime               @default(now())
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+}
+
+enum ComplianceDocumentType {
+  COI_GENERAL_LIABILITY
+  COI_WORKERS_COMP
+  COI_AUTO
+  COI_UMBRELLA
+  COI_PROFESSIONAL_LIABILITY
+  COI_BUILDERS_RISK
+  W9
+  PREQUALIFICATION
+  MWBE_CERT
+  OTHER
+}
+
+// ─── Contract ─────────────────────────────────────────────────────────────────
+
+model Contract {
+  id               String         @id @default(cuid())
+  projectId        String
+  vendorId         String
+  contractType     ContractType
+  originalValue    Decimal        @db.Decimal(15, 2)
+  retainageRate    Decimal        @db.Decimal(5, 4) @default(0.1000)
+  retainageHeld    Decimal        @db.Decimal(15, 2) @default(0)
+  retainageReleased Decimal       @db.Decimal(15, 2) @default(0)
+  status           ContractStatus @default(DRAFT)
+  fileKey          String?
+  notes            String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  project          Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  vendor           Vendor               @relation(fields: [vendorId], references: [id])
+  budgetLines      ContractBudgetLine[]
+  changeOrders     ChangeOrder[]
+  scheduleOfValues ScheduleOfValuesLine[]
+  invoices         Invoice[]
+  lienWaivers      LienWaiver[]
+}
+
+enum ContractType {
+  GC_GMP
+  LUMP_SUM
+  COST_PLUS
+  TIME_AND_MATERIALS
+  PROFESSIONAL_SERVICES
+  PURCHASE_ORDER
+}
+
+enum ContractStatus {
+  DRAFT
+  EXECUTED
+  ACTIVE
+  SUBSTANTIALLY_COMPLETE
+  FINAL_COMPLETE
+  CLOSED
+  DISPUTED
+}
+
+model ContractBudgetLine {
+  id           String  @id @default(cuid())
+  contractId   String
+  budgetLineId String
+  percentage   Decimal @db.Decimal(5, 2) @default(100)
+
+  contract   Contract   @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  budgetLine BudgetLine @relation(fields: [budgetLineId], references: [id])
+
+  @@unique([contractId, budgetLineId])
+}
+
+model ScheduleOfValuesLine {
+  id              String  @id @default(cuid())
+  contractId      String
+  lineNumber      Int
+  description     String
+  scheduledValue  Decimal @db.Decimal(15, 2)
+  percentComplete Decimal @db.Decimal(5, 2) @default(0)
+  storedMaterials Decimal @db.Decimal(15, 2) @default(0)
+  retainageRate   Decimal @db.Decimal(5, 4)
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+}
+
+model ChangeOrder {
+  id            String       @id @default(cuid())
+  contractId    String
+  coNumber      Int
+  description   String
+  amount        Decimal      @db.Decimal(15, 2)
+  reasonCode    COReasonCode
+  status        COStatus     @default(DRAFT)
+  submittedById String
+  approvedById  String?
+  approvedAt    DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  contract    Contract  @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  submittedBy User      @relation("COSubmittedBy", fields: [submittedById], references: [id])
+  approvedBy  User?     @relation("COApprovedBy", fields: [approvedById], references: [id])
+}
+
+enum COReasonCode {
+  OWNER_DIRECTED
+  UNFORESEEN_CONDITION
+  DESIGN_CHANGE
+  CODE_COMPLIANCE
+  REGULATORY_PERMIT
+  SCOPE_CLARIFICATION
+}
+
+enum COStatus {
+  DRAFT
+  PM_REVIEW
+  PRINCIPAL_APPROVAL
+  EXECUTED
+}
+
+// ─── Invoice ──────────────────────────────────────────────────────────────────
+
+model Invoice {
+  id             String        @id @default(cuid())
+  projectId      String
+  vendorId       String
+  contractId     String?
+  invoiceNumber  String?
+  invoiceDate    DateTime?
+  dueDate        DateTime?
+  totalAmount    Decimal       @db.Decimal(15, 2)
+  retainageAmount Decimal      @db.Decimal(15, 2) @default(0)
+  netPayable     Decimal       @db.Decimal(15, 2)
+  drawPeriodId   String?
+  status         InvoiceStatus @default(DRAFT)
+  paidAt         DateTime?
+  paymentRef     String?
+  paidAmount     Decimal?      @db.Decimal(15, 2)
+  fileKey        String?
+  aiExtracted    Boolean       @default(false)
+  createdById    String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  project        Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  vendor         Vendor           @relation(fields: [vendorId], references: [id])
+  contract       Contract?        @relation(fields: [contractId], references: [id])
+  drawPeriod     DrawPeriod?      @relation(fields: [drawPeriodId], references: [id])
+  lineItems      InvoiceLineItem[]
+  approvalEvents ApprovalEvent[]
+  lienWaivers    LienWaiver[]
+  drawLineItems  DrawLineItem[]
+  createdBy      User             @relation("InvoiceCreatedBy", fields: [createdById], references: [id])
+}
+
+enum InvoiceStatus {
+  DRAFT
+  CODED
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  PAID
+}
+
+model InvoiceLineItem {
+  id             String  @id @default(cuid())
+  invoiceId      String
+  budgetLineId   String
+  description    String?
+  amount         Decimal @db.Decimal(15, 2)
+  basisEligible  Boolean @default(false)
+  htcQRE         Boolean @default(false)
+  htcQRECategory String?
+  itcQEP         Boolean @default(false)
+  itcQEPCategory String?
+
+  invoice        Invoice                      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  budgetLine     BudgetLine                   @relation(fields: [budgetLineId], references: [id])
+  fundingSources InvoiceLineItemFundingSource[]
+}
+
+model InvoiceLineItemFundingSource {
+  id                String  @id @default(cuid())
+  invoiceLineItemId String
+  fundingSourceId   String
+  amount            Decimal @db.Decimal(15, 2)
+
+  invoiceLineItem InvoiceLineItem @relation(fields: [invoiceLineItemId], references: [id], onDelete: Cascade)
+  fundingSource   FundingSource   @relation(fields: [fundingSourceId], references: [id])
+}
+
+model ApprovalEvent {
+  id        String         @id @default(cuid())
+  invoiceId String
+  userId    String
+  action    ApprovalAction
+  notes     String?
+  createdAt DateTime       @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+}
+
+enum ApprovalAction {
+  SUBMITTED
+  APPROVED
+  REJECTED
+  RETURNED
+}
+
+// ─── Lien Waiver ─────────────────────────────────────────────────────────────
+
+model LienWaiver {
+  id             String           @id @default(cuid())
+  vendorId       String
+  contractId     String?
+  invoiceId      String?
+  waiverType     LienWaiverType
+  paymentType    LienPaymentType
+  amountCovered  Decimal?         @db.Decimal(15, 2)
+  periodCovered  String?
+  status         LienWaiverStatus @default(REQUESTED)
+  fileKey        String?
+  aiValidated    Boolean          @default(false)
+  // JSON array of AI validation flags: [{field, expected, found, severity}]
+  aiFlags        String?
+  uploadToken    String?          @unique
+  tokenExpiresAt DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  vendor   Vendor    @relation(fields: [vendorId], references: [id])
+  contract Contract? @relation(fields: [contractId], references: [id])
+  invoice  Invoice?  @relation(fields: [invoiceId], references: [id])
+}
+
+enum LienWaiverType {
+  CONDITIONAL
+  UNCONDITIONAL
+}
+
+enum LienPaymentType {
+  PARTIAL
+  FINAL
+}
+
+enum LienWaiverStatus {
+  NOT_REQUIRED
+  REQUESTED
+  RECEIVED
+  ON_FILE
+  FLAGGED
+}
+
+// ─── Draw ─────────────────────────────────────────────────────────────────────
+
+model DrawPeriod {
+  id             String     @id @default(cuid())
+  projectId      String
+  fundingSourceId String
+  drawNumber     Int
+  periodStart    DateTime
+  periodEnd      DateTime
+  status         DrawStatus @default(DRAFT)
+  grossAmount    Decimal    @db.Decimal(15, 2) @default(0)
+  retainageAmount Decimal   @db.Decimal(15, 2) @default(0)
+  netAmount      Decimal    @db.Decimal(15, 2) @default(0)
+  fundedAt       DateTime?
+  drawTemplateId String?
+  // Token-based read-only lender/investor access
+  accessToken    String?    @unique
+  tokenExpiresAt DateTime?
+  submittedById  String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fundingSource FundingSource @relation(fields: [fundingSourceId], references: [id])
+  drawTemplate  DrawTemplate? @relation(fields: [drawTemplateId], references: [id])
+  invoices      Invoice[]
+  drawLineItems DrawLineItem[]
+  submittedBy   User?         @relation("DrawSubmittedBy", fields: [submittedById], references: [id])
+
+  @@unique([projectId, fundingSourceId, drawNumber])
+}
+
+enum DrawStatus {
+  DRAFT
+  PM_REVIEW
+  PRINCIPAL_APPROVAL
+  SUBMITTED
+  FUNDED
+}
+
+model DrawLineItem {
+  id           String  @id @default(cuid())
+  drawPeriodId String
+  invoiceId    String
+  amount       Decimal @db.Decimal(15, 2)
+
+  drawPeriod DrawPeriod @relation(fields: [drawPeriodId], references: [id], onDelete: Cascade)
+  invoice    Invoice    @relation(fields: [invoiceId], references: [id])
+
+  @@unique([drawPeriodId, invoiceId])
+}
+
+model DrawTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sections    DrawTemplateSection[]
+  drawPeriods DrawPeriod[]
+  createdBy   User                  @relation(fields: [createdById], references: [id])
+}
+
+model DrawTemplateSection {
+  id          String          @id @default(cuid())
+  templateId  String
+  sectionType DrawSectionType
+  sortOrder   Int
+  // JSON config: merge fields enabled, column visibility, filters, etc.
+  config      String?
+
+  template DrawTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+}
+
+enum DrawSectionType {
+  COVER_LETTER
+  BUDGET_STATUS
+  INVOICE_TABLE
+  SCHEDULE_OF_VALUES
+  AIA_G702
+  LIEN_WAIVER_LOG
+  CHANGE_ORDER_LOG
+  FUNDING_SOURCE_SUMMARY
+  OWNERS_SWORN_STATEMENT
+  CERTIFICATION_BLOCK
+  ATTACHMENT_LIST
+}
+
+// ─── Cash Flow Projection ────────────────────────────────────────────────────
+
+model CashFlowProjection {
+  id              String   @id @default(cuid())
+  projectId       String
+  fundingSourceId String
+  month           DateTime // stored as first day of the month
+  projectedAmount Decimal  @db.Decimal(15, 2)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fundingSource FundingSource @relation(fields: [fundingSourceId], references: [id])
+
+  @@unique([projectId, fundingSourceId, month])
+}
+
+// ─── Cost Certification ──────────────────────────────────────────────────────
+
+model CostCertification {
+  id String @id @default(cuid())
+  projectId String @unique
+
+  // LIHTC
+  lihtcEligibleBasis      Decimal? @db.Decimal(15, 2)
+  lihtcQualifiedBasis     Decimal? @db.Decimal(15, 2)
+  lihtcApplicableFraction Decimal? @db.Decimal(5, 4)
+  lihtcApplicablePercent  Decimal? @db.Decimal(5, 4)
+  lihtcAdjustedBasis      Decimal? @db.Decimal(15, 2)
+
+  // HTC (Federal + Missouri)
+  htcQRETotal          Decimal? @db.Decimal(15, 2)
+  htcQREStructural     Decimal? @db.Decimal(15, 2)
+  htcQREArchitectural  Decimal? @db.Decimal(15, 2)
+  htcQREOther          Decimal? @db.Decimal(15, 2)
+  htcAdjustedBasis     Decimal? @db.Decimal(15, 2)
+  htcMissouriQRETotal  Decimal? @db.Decimal(15, 2)
+
+  // ITC
+  itcQEPTotal    Decimal? @db.Decimal(15, 2)
+  itcQEPSolar    Decimal? @db.Decimal(15, 2)
+  itcQEPBattery  Decimal? @db.Decimal(15, 2)
+  itcQEPOther    Decimal? @db.Decimal(15, 2)
+  itcCreditRate  Decimal? @db.Decimal(5, 4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// ─── User & Auth ──────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  isGlobalAdmin Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts           Account[]
+  sessions           Session[]
+  projectRoles       ProjectRole[]
+  approvalEvents     ApprovalEvent[]
+  createdInvoices    Invoice[]        @relation("InvoiceCreatedBy")
+  coSubmissions      ChangeOrder[]    @relation("COSubmittedBy")
+  coApprovals        ChangeOrder[]    @relation("COApprovedBy")
+  transferProposals  BudgetTransfer[] @relation("TransferProposedBy")
+  transferApprovals  BudgetTransfer[] @relation("TransferApprovedBy")
+  drawsSubmitted     DrawPeriod[]     @relation("DrawSubmittedBy")
+  drawTemplates      DrawTemplate[]
+}
+
+model ProjectRole {
+  id                   String   @id @default(cuid())
+  userId               String
+  projectId            String
+  role                 UserRole
+  // Invoice approval threshold in dollars; null = role default
+  invoiceApprovalLimit Decimal? @db.Decimal(15, 2)
+  createdAt            DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+}
+
+enum UserRole {
+  ADMIN
+  PROJECT_MANAGER
+  CONTROLLER
+  PRINCIPAL
+  VIEWER
+}
+
+// ─── Audit Log ────────────────────────────────────────────────────────────────
+
+// Immutable audit trail — records are never deleted (LIHTC 30-year retention)
+model AuditEvent {
+  id         String   @id @default(cuid())
+  projectId  String?
+  userId     String?
+  entityType String   // e.g. "Invoice", "BudgetLine", "DrawPeriod"
+  entityId   String
+  action     String   // e.g. "CREATE", "UPDATE", "DELETE", "APPROVE", "REJECT"
+  before     String?  // JSON snapshot before change
+  after      String?  // JSON snapshot after change
+  createdAt  DateTime @default(now())
+
+  project Project? @relation(fields: [projectId], references: [id])
+}
+
+// ─── NextAuth Models ──────────────────────────────────────────────────────────
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
